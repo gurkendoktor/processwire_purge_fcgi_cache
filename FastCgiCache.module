@@ -1,0 +1,401 @@
+<?php
+
+/**
+ * ProcessWire 'Hello world' demonstration module
+ *
+ * Demonstrates the Module interface and how to add hooks.
+ *
+ * ProcessWire 2.x
+ * Copyright (C) 2010 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://www.processwire.com
+ * http://www.ryancramer.com
+ *
+ */
+
+class FastCgiCache extends WireData implements Module, ConfigurableModule {
+
+	private static $fcgiPurgeURL;
+	private static $fcgiCacheFolder;
+	private static $fcgiCacheKey;
+
+
+	/**
+	 * getModuleInfo is a module required by all modules to tell ProcessWire about them
+	 *
+	 * @return array
+	 *
+	 */
+	public static function getModuleInfo() {
+
+		return array(
+			'title' => 'fastcgi_cache management module',
+
+			// version: major, minor, revision, i.e. 100 = 1.0.0
+			'version' => 002,
+			'author' => 'Matthias Haak',
+			'summary' => 'A module used for purging the fastcgi_cache after saving the site',
+			'href' => 'https://github.com/gurkendoktor',
+
+			// singular=true: indicates that only one instance of the module is allowed.
+			// This is usually what you want for modules that attach hooks.
+			'singular' => true,
+
+			// autoload=true: indicates the module should be started with ProcessWire.
+			// This is necessary for any modules that attach runtime hooks, otherwise those
+			// hooks won't get attached unless some other code calls the module on it's own.
+			// Note that autoload modules are almost always also 'singular' (seen above).
+			'autoload' => true,
+			);
+	}
+	public static function getModuleConfigInputFields(array $data){
+		$fields             = new InputfieldWrapper();
+
+		$field              = wire('modules')->get('InputfieldSelect');
+		$field->name        = 'fcgi_cache_protocols';
+		$field->label       = __('Cache Protocols');
+		$field->columnWidth = 50;
+		//$field->attr(array('placeholder' => 'PROCESSWIRE'));
+		//$field->value       = (!empty($data['fcgi_cache_pool'])) ? ($data['fcgi_cache_pool']) : '';
+		$field->description = __('Select the protocol(s) you want the cache to be cleared for');
+
+
+		$field              = wire('modules')->get('InputfieldText');
+		$field->name        = 'fcgi_cache_pool';
+		$field->label       = __('Cache Pool');
+		$field->columnWidth = 50;
+		$field->attr(array('placeholder' => 'PROCESSWIRE'));
+		$field->value       = (!empty($data['fcgi_cache_pool'])) ? ($data['fcgi_cache_pool']) : '';
+		$field->description = __('Enter the key of your fastcgi_cache pool here');
+		$fields->add($field);
+
+		$field              = wire('modules')->get('InputfieldCheckbox');
+		$field->name        = 'use_fcgi_purge';
+		//$field->value       = (!empty($data['use_fcgi_purge'])) ? ($data['use_fcgi_purge']) : '';
+		$field->value       = 1;
+		$field->attr('checked', ($data['use_fcgi_purge'] === 1 ? 'checked' : ''));
+		$field->label       = __('Use fcgi_purge');
+		$fields->add($field);
+
+		$field              = wire('modules')->get('InputfieldText');
+		$field->name        = 'fcgi_purge_url';
+		$field->label       = __('Cache Purge URL');
+		$field->columnWidth = 50;
+		$field->attr(array('placeholder' => '/purge/*'));
+		$field->value       = (!empty($data['fcgi_purge_url'])) ? ($data['fcgi_purge_url']) : '';
+		$field->description = __('The relative URL to purge your fastcgi_cache. Usually it is /purge/*');
+		$fields->add($field);
+
+		//cache dir
+		$field              = wire('modules')->get('InputfieldText');
+		$field->name        = 'fcgi_cache_dir';
+		$field->label       = __('Cache Folder');
+		$field->columnWidth = 50;
+		$field->attr(array('placeholder' => '/tmp/nginx/cache/'));
+		$field->value       = (!empty($data['fcgi_cache_dir'])) ? ($data['fcgi_cache_dir']) : '';
+		$field->description = __('The path where your cache files are located. Copy this from your nginx config');
+		$fields->add($field);
+
+		//cache levels
+		$field              = wire('modules')->get('InputfieldText');
+		$field->name        = 'fcgi_cache_levels';
+		$field->label       = __('Cache Levels');
+		$field->columnWidth = 50;
+		$field->attr(array('placeholder' => '1:2'));
+		$field->value       = (!empty($data['fcgi_cache_levels'])) ? ($data['fcgi_cache_levels']) : '';
+		$field->description = __('Cache Levels (like "1:2". Copy this from your nginx config');
+		$fields->add($field);
+
+		//cache scheme
+		$field              = wire('modules')->get('InputfieldText');
+		$field->name        = 'fcgi_cache_key';
+		$field->label       = __('Cache Key');
+		$field->columnWidth = 50;
+		$field->attr(array('placeholder' => '$scheme$request_method$host$request_uri'));
+		$field->value       = (!empty($data['fcgi_cache_key'])) ? ($data['fcgi_cache_key']) : '';
+		$field->description = __('The way your caches are created. Copy this from your nginx config');
+		$fields->add($field);
+		$fields->add($field);
+
+		//options for cache scheme
+		$cache_key_options = explode('$', $data['fcgi_cache_key']);
+		$ignore_fields = array("", "host", "request_uri");
+
+		foreach($cache_key_options as $cache_key){
+			if(in_array($cache_key, $ignore_fields)){
+				continue;
+			}
+			$field              = wire('modules')->get('InputfieldText');
+			$field->name        = 'cache_keys_'.$cache_key;
+			$field->label       = __($cache_key);
+			$field->columnWidth = 25;
+			$field->value       = (!empty($data['cache_keys_'.$cache_key])) ? ($data['cache_keys_'.$cache_key]) : '';
+			$field->description = __('Options for Cache Key '.$cache_key.', separate with |');
+			$fields->add($field);
+		}
+
+		//$_cacheInfo         = self::_getNumberOfCacheFiles();
+		$field              = wire('modules')->get('InputfieldMarkup');
+		$field->columnWidth = 25;
+		$field->label       = __('Purge All');
+		$field->description = __('Here you can delete all cached files.').'<br /><br />';
+		//$field->description.= sprintf(__('Cached files: %s | Used space: %s'), $_cacheInfo['numberOfFiles'], $_cacheInfo['bytesTotal']);
+
+		$field_button           = wire('modules')->get('InputfieldButton');
+		$field_button->name     = 'empty_cache';
+		$field_button->value    = __('Empty cache');
+		$field_button->href     = 'edit?name='.wire('input')->get('name').'&cache=clear';
+
+		$field->add($field_button);
+		$fields->add($field);
+
+		return $fields;
+	}
+	/**
+	 * Initialize the module
+	 *
+	 * ProcessWire calls this when the module is loaded. For 'autoload' modules, this will be called
+	 * when ProcessWire's API is ready. As a result, this is a good place to attach hooks.
+	 *
+	 */
+	public function init() {
+
+		// add a hook after the $pages->save, to issue a notice every time a page is saved
+		$this->pages->addHookAfter('save', $this, 'after_save');
+		$this->addHookAfter('Page::save', $this, 'after_save');
+		$this->addHookAfter('Page::render', $this, 'ClearCacheFromBackend');
+
+/*		self::$fcgiPurgeURL = $this->fcgi_purge_url;
+		self::$fcgiCacheFolder = $this->fcgi_cache_folder;
+		self::$fcgiCacheKey = $this->fcgi_cache_key;*/
+
+	}
+
+	public function __construct(){
+		$this->fcgi_purge_url = '/purge/';
+		$this->fcgi_cache_folder = '/var/nginx/cache';
+		$this->fcgi_cache_key = '$scheme$request_method$host$request_uri';
+	}
+
+	/**
+	 * Purge the respective cache every time a page is saved
+	 *
+	 */
+	public function after_save($event) {
+		$page = $event->arguments[0];
+
+		$result  = $this->purge_cache($page->path);
+		$this->message($result);
+		if($result["success"] == true){
+			$this->message("{$page->path} got purged from cache ".($result["success"].' possible options'));
+		}
+		else {
+			$this->error("{$page->path} failed to be purged from cache");
+		}
+	}
+
+	/*
+	 * build cache keys (md5 hashes) for a url (that is actually a page path)
+	 * respects the scheme ($protocol$method…) and the key (1:2)
+	 *
+	 */
+	private function build_cache_keys($url){
+		$keys = array();
+
+		//sanitize url
+		$url = str_replace('http://', '', $url);
+		$url = str_replace('https://', '', $url);
+
+
+		$cache_scheme = array();
+		$cache_key_options = explode('$', $this->fcgi_cache_key);
+
+		//find the options for the given key as stated by the user
+		foreach($cache_key_options as $cache_key){
+			$cache_scheme[$cache_key] = explode('|',$this->get('cache_keys_'.$cache_key));
+
+			//Host and URI don't need options, but still values
+			if($cache_key == "host"){
+				$cache_scheme[$cache_key] = array($this->config->httpHost);
+			}
+			if($cache_key == "request_uri"){
+				$cache_scheme[$cache_key] = array($url);
+			}
+		}
+
+		$combined_keys = array();
+		//create every possible cache hash for $url according to the given key
+		$combined_keys = self::cartesian($cache_scheme);
+
+		foreach($combined_keys as $option){
+			$cache_string = implode('',$option);
+			$keys[] = md5($cache_string);
+		}
+
+		return $keys;
+	}
+
+	private function purge_cache($url = '*'){
+
+		$total = 0;
+		$success_files = 0;
+
+		if ($this->use_fcgi_purge){
+			$purgeCacheSuccess = $this->_clear_fcgi_purge($url);
+
+			if($purgeCacheSuccess->success === true){
+				return $purgeCacheSuccess;
+			}
+			else return false;
+		}
+
+		if($url == "*"){
+			$success = $this->delete_cache("*");
+			return $success;
+		}
+
+		$cacheKeys = $this->build_cache_keys($url);
+		if(!is_array($cacheKeys)){
+			//something went wrong
+		}
+
+		foreach($cacheKeys as $cache_key){
+			$total++;
+			$return_success = $this->delete_cache($cache_key);
+			if($return_success){
+				$success_files ++;
+			}
+		}
+		if($success_files > 0){
+			return array("success" => true, "amount" => $success_files);
+		}
+		return array("success" => false);
+
+	}
+
+	/*
+	 * delete cache on file system using a given cache key
+	 */
+	private function delete_cache($cache_key){
+
+		$return = array("success" => false,
+						"error" => "",
+						"amount" => 0);
+
+		if($cache_key == "*"){
+			try{
+				$cache_dir = new RecursiveDirectoryIterator($this->fcgi_cache_dir);
+			}
+			catch(Exception $e){
+				$return["error"] = "fcgi_cache_folder is not there";
+				return $return;
+			}
+			$iterator = new RecursiveIteratorIterator($cache_dir, RecursiveIteratorIterator::CHILD_FIRST);
+
+			$success_files = 0;
+			foreach($iterator as $file){
+				if(unlink($file)){
+					$success_files++;
+				}
+			}
+			if($success_files > 0){
+				$return["success"] = true;
+				$return["amount"] = $success_files;
+				return $return;
+			}
+		}
+
+		$cacheLevels = $this->fcgi_cache_levels;
+		if (strstr($cacheLevels,':')){
+			$cacheLevelsArray = explode(':',$cacheLevels);
+		}
+
+		$pos = strlen($cache_key);
+		foreach($cacheLevelsArray as $v){
+			$parts[] = substr($cache_key, $pos-$v, $v);
+			$pos -=$v;
+		}
+
+		$partsStr = implode($parts, '/');
+		$partsStr .= '/';
+		if(!unlink($this->fcgi_cache_dir.'/'.$partsStr.'/'.$cache_key)){
+			return $return;
+		}
+		$return["success"] = true;
+		return $return;
+	}
+
+
+	private static function _clear_fcgi_purge($purgeSiteURL, $params = array()){
+
+		$ch = curl_init();
+		$path = wire('config')->httpHost.$purgeSiteURL;
+		curl_setopt($ch, CURLOPT_URL, $path);
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PURGE");
+		$result = curl_exec($ch);
+		$code =  curl_getinfo($ch, CURLINFO_HTTP_CODE );
+
+		/*
+		 * cache purge URL is different or does not exist
+		*/
+		if($code != 200){
+			$result->success = false;
+			$result-> error = "NXCACHE";
+			$result->url = $path;
+		}
+
+		return $result;
+	}
+
+	protected function ClearCacheFromBackend($event) {
+
+		// ------------------------------------------------------------------------
+		// If the parameter and the template are correct, clear the cache.
+		// ------------------------------------------------------------------------
+		if(wire('input')->get('cache') == 'clear' AND $event->object->template == 'admin') {
+
+			// ------------------------------------------------------------------------
+			// Clear cache.
+			// ------------------------------------------------------------------------
+			$result = $this->purge_cache();
+
+			if($result["success"] === true){
+				$this->message("Everything just got purged from cache");
+			}
+			else{
+				$this->error("SNAP! Cache couldn't be emptied. Reason: $result->error");
+
+
+		}
+			// ------------------------------------------------------------------------
+			// Redirect to module configuration.
+			// ------------------------------------------------------------------------
+			wire('session')->redirect($event->object->httpUrl.'edit?name='.wire('input')->get('name'));
+		}
+	}
+
+	//helpers
+	function cartesian($input) {
+		// filter out empty values
+		$input = array_filter($input);
+		$result = array(array());
+
+		foreach ($input as $key => $values) {
+			$append = array();
+
+			foreach($result as $product) {
+				foreach($values as $item) {
+					$product[$key] = $item;
+					$append[] = $product;
+				}
+			}
+
+			$result = $append;
+		}
+
+		return $result;
+	}
+
+}
